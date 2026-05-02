@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>X Manager</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="app-layout">
+        <header class="header">
+            <div class="header-top">
+                <h1>X Manager</h1>
+            </div>
+            <div class="header-search">
+                <input type="text" id="filter-search" placeholder="Search experiments…">
+            </div>
+        </header>
+
+        <section class="list-panel">
+            <div class="toolbar">
+                <div class="toolbar-row">
+                    <div class="filter-group">
+                        <span class="filter-label">From</span>
+                        <input type="date" id="filter-after" class="date-input">
+                    </div>
+                    <div class="filter-group">
+                        <span class="filter-label">To</span>
+                        <input type="date" id="filter-before" class="date-input">
+                    </div>
+                    <div class="filter-group col-picker-wrap">
+                        <span class="filter-label">Columns</span>
+                        <button class="filter-select" id="col-picker-btn">All ▾</button>
+                        <div class="col-picker-dropdown" id="col-picker-dropdown" style="display:none"></div>
+                    </div>
+                    <div id="active-filters"></div>
+                    <label class="archived-toggle"><input type="checkbox" id="show-archived-toggle"> Show archived</label>
+                    <label class="archived-toggle"><input type="checkbox" id="detailed-view-toggle"> Detailed view</label>
+                </div>
+                <div class="toolbar-row">
+                    <div class="toolbar-actions">
+                        <button id="compare-btn" class="btn btn-sm btn-primary" disabled>Compare (0)</button>
+                        <button id="bulk-tag-btn" class="btn btn-sm btn-primary" disabled>Tags (0)</button>
+                        <button id="new-experiment-btn" class="btn btn-sm btn-primary">+ New</button>
+                    </div>
+                </div>
+                <div class="toolbar-row">
+                    <span id="status-counts" class="status-counts"></span>
+                </div>
+            </div>
+            <div class="table-wrap">
+                <table id="experiment-table">
+                    <thead id="experiment-thead"></thead>
+                    <tbody id="experiment-tbody"></tbody>
+                </table>
+                <div id="empty-state" class="empty-state" style="display:none">No experiments yet.</div>
+            </div>
+        </section>
+    </div>
+
+    <!-- Modals -->
+    <div id="modal-overlay" class="modal-overlay" style="display:none">
+        <div class="modal" id="modal">
+            <div class="modal-header">
+                <h3 id="modal-title"></h3>
+                <button class="modal-close" id="modal-close">&times;</button>
+            </div>
+            <div class="modal-body" id="modal-body"></div>
+            <div class="modal-footer">
+                <button class="btn" id="modal-cancel">Cancel</button>
+                <button class="btn btn-primary" id="modal-submit">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

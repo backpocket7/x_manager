@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Experiment Lineage — X Manager</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        :root {
+            --bg: #f5f5f5; --surface: #fff; --border: #e0e0e0;
+            --text: #1a1a1a; --text-muted: #666; --primary: #2563eb;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            font-size: 12px; color: var(--text); background: var(--bg);
+            padding: 24px 48px;
+        }
+        h1 { font-size: 15px; font-weight: 600; margin-bottom: 16px; }
+        .tree-node {
+            display: flex; align-items: center; gap: 8px;
+            padding: 5px 8px; border-radius: 4px; margin-bottom: 2px;
+            cursor: default;
+        }
+        .tree-node:hover { background: #f0f4ff; }
+        .tree-node.root { font-weight: 600; background: #e0e7ff; }
+        .indent { display: inline-block; width: 24px; flex-shrink: 0; }
+        .connector {
+            display: inline-block; width: 24px; flex-shrink: 0;
+            color: var(--border); font-size: 10px; text-align: center;
+        }
+        .node-name { font-weight: 500; }
+        .node-name a { color: var(--primary); text-decoration: none; }
+        .node-name a:hover { text-decoration: underline; }
+        .node-alias { color: var(--text-muted); font-size: 11px; }
+        .badge {
+            display: inline-block; font-size: 9px; font-weight: 600;
+            padding: 2px 8px; border-radius: 10px; letter-spacing: 0.3px;
+        }
+        .badge-pending   { background: #fef3c7; color: #92400e; }
+        .badge-running   { background: #dbeafe; color: #1e40af; }
+        .badge-stopped   { background: #fde68a; color: #78350f; }
+        .badge-completed { background: #d1fae5; color: #065f46; }
+        .badge-failed    { background: #fee2e2; color: #991b1b; }
+        .badge-cancelled { background: #f3f4f6; color: #374151; }
+        .badge-pretrain  { background: #e0e7ff; color: #3730a3; }
+        .badge-midtrain  { background: #cffafe; color: #155e75; }
+        .badge-posttrain { background: #fef3c7; color: #92400e; }
+        .badge-tag { background: #f3f4f6; color: #374151; margin-left: 2px; }
+        .relation { font-size: 9px; color: var(--text-muted); }
+        .empty { color: var(--text-muted); padding: 32px; }
+    </style>
+</head>
+<body>
+    <h1 id="title">Experiment Lineage</h1>
+    <div id="tree"></div>
+
+    <script src="/static/js/api.js"></script>
+    <script>
+        const ACRONYMS = new Set(['sft', 'rl']);
+        function capitalize(str) {
+            if (!str) return '';
+            if (ACRONYMS.has(str.toLowerCase())) return str.toUpperCase();
+            return str.charAt(0).toUpperCase() + str.slice(1);
+        }
+        function esc(s) {
+            if (!s) return '';
+            const d = document.createElement('div');
+            d.textContent = s;
+            return d.innerHTML;
+        }
+
+        const expId = {{ exp_id }};
+
+        (async () => {
+            const nodes = await API.get(`/api/experiments/${expId}/tree`);
+            if (!nodes || nodes.length === 0) {
+                document.getElementById('tree').innerHTML = '<div class="empty">No experiments found.</div>';
+                return;
+            }
+
+            const current = nodes.find(n => n.id === expId);
+            if (current) {
+                document.getElementById('title').textContent = `Experiment Lineage: ${current.name}`;
+                document.title = `Experiment Lineage: ${current.name} — X Manager`;
+            }
+
+            const seen = new Set();
+            const unique = nodes.filter(n => {
+                const key = `${n.id}:${n.parent_id}`;
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
+
+            const childMap = {};
+            const nodeIds = new Set(unique.map(n => n.id));
+            for (const n of unique) {
+                if (n.parent_id != null && nodeIds.has(n.parent_id)) {
+                    if (!childMap[n.parent_id]) childMap[n.parent_id] = [];
+                    if (!childMap[n.parent_id].some(c => c.id === n.id)) {
+                        childMap[n.parent_id].push(n);
+                    }
+                }
+            }
+
+            const roots = unique.filter(n => n.parent_id == null || !nodeIds.has(n.parent_id));
+            const rootIds = new Set();
+            const dedupRoots = roots.filter(n => {
+                if (rootIds.has(n.id)) return false;
+                rootIds.add(n.id);
+                return true;
+            });
+
+            const container = document.getElementById('tree');
+
+            function renderNode(node, depth) {
+                const div = document.createElement('div');
+                const isCurrent = node.id === expId;
+                div.className = 'tree-node' + (isCurrent ? ' root' : '');
+
+                let prefix = '';
+                for (let i = 0; i < depth; i++) {
+                    prefix += '<span class="indent"></span>';
+                }
+                if (depth > 0) {
+                    prefix += '<span class="connector">&#x251C;&#x2500;</span>';
+                }
+
+                const alias = node.alias ? ` <span class="node-alias">(${esc(node.alias)})</span>` : '';
+                const tags = (node.tags || []).map(t =>
+                    `<span class="badge badge-tag">${esc(t.name)}</span>`
+                ).join(' ');
+                const relation = node.relation ? `<span class="relation">${esc(node.relation)}</span>` : '';
+
+                div.innerHTML = `
+                    ${prefix}
+                    <span class="node-name"><a href="/?search=${encodeURIComponent(node.name)}">${esc(node.name)}</a></span>
+                    ${alias}
+                    <span class="badge badge-${node.stage_category}">${capitalize(node.stage_name)}</span>
+                    <span class="badge badge-${node.status}">${capitalize(node.status)}</span>
+                    ${relation}
+                    ${tags}
+                `;
+                container.appendChild(div);
+
+                const children = childMap[node.id] || [];
+                children.sort((a, b) => a.name.localeCompare(b.name));
+                for (const child of children) {
+                    renderNode(child, depth + 1);
+                }
+            }
+
+            for (const root of dedupRoots) {
+                renderNode(root, 0);
+            }
+        })();
+    </script>
+</body>
+</html>
