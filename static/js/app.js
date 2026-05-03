@@ -1,12 +1,7 @@
+// ====== Shared state ======
 let stages = [];
 let allTags = [];
-const checkedIds = new Set();
-let expandedId = null;
-let sortKey = '';
-let sortDir = 'asc';
-let displayedCount = 0;
-
-const filters = { stage: '', status: '', tag: '', search: '', after: '', before: '', show_archived: false };
+const panes = [];
 
 const ALL_COLUMNS = [
     { key: 'check',   label: '',        fixed: true },
@@ -23,16 +18,17 @@ const ALL_COLUMNS = [
 ];
 
 const visibleColumns = new Set(ALL_COLUMNS.map(c => c.key));
-
 const ACRONYMS = new Set(['sft', 'rl']);
+const SORTABLE = new Set(['name', 'alias', 'stage', 'status', 'started', 'updated']);
+const ONGOING_STATUSES = new Set(['pending', 'running']);
+
+// ====== Utilities ======
 
 function capitalize(str) {
     if (!str) return '';
     if (ACRONYMS.has(str.toLowerCase())) return str.toUpperCase();
     return str.charAt(0).toUpperCase() + str.slice(1);
 }
-
-const SORTABLE = new Set(['name', 'alias', 'stage', 'status', 'started', 'updated']);
 
 function sortValue(exp, key) {
     switch (key) {
@@ -46,89 +42,42 @@ function sortValue(exp, key) {
     }
 }
 
-function sortExperiments(experiments) {
-    if (!sortKey) return experiments;
-    const dir = sortDir === 'asc' ? 1 : -1;
-    return [...experiments].sort((a, b) => {
-        const va = sortValue(a, sortKey);
-        const vb = sortValue(b, sortKey);
-        if (va < vb) return -1 * dir;
-        if (va > vb) return 1 * dir;
-        return 0;
-    });
+function esc(str) {
+    if (!str) return '';
+    const d = document.createElement('div');
+    d.textContent = str;
+    return d.innerHTML;
 }
 
-document.addEventListener('DOMContentLoaded', async () => {
-    [stages, allTags] = await Promise.all([
-        API.get('/api/stages'),
-        API.get('/api/tags'),
-    ]);
-    loadColumnPrefs();
-    buildColumnPicker();
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-    const initial = new URLSearchParams(window.location.search);
-    if (initial.get('stage')) filters.stage = initial.get('stage');
-    if (initial.get('status')) filters.status = initial.get('status');
-    if (initial.get('tag')) filters.tag = initial.get('tag');
-    if (initial.get('after')) filters.after = initial.get('after');
-    if (initial.get('before')) filters.before = initial.get('before');
-    if (initial.get('show_archived')) {
-        filters.show_archived = true;
-        document.getElementById('show-archived-toggle').checked = true;
-    }
-    if (initial.get('search')) {
-        filters.search = initial.get('search');
-        document.getElementById('filter-search').value = filters.search;
-    }
-    if (filters.after) document.getElementById('filter-after').value = filters.after;
-    if (filters.before) document.getElementById('filter-before').value = filters.before;
-
-    history.replaceState({ ...filters }, '', window.location.href);
-
-    renderActiveFilters();
-    await loadExperiments();
-    bindEvents();
-
-    window.addEventListener('popstate', (e) => restoreFilterState(e.state));
-});
-
-function renderActiveFilters() {
-    const container = document.getElementById('active-filters');
-    container.innerHTML = '';
-    if (filters.stage) {
-        const s = stages.find(s => String(s.id) === String(filters.stage));
-        const label = s ? capitalize(s.name) : filters.stage;
-        container.appendChild(makeFilterChip('Stage: ' + label, 'stage'));
-    }
-    if (filters.status) {
-        container.appendChild(makeFilterChip('Status: ' + capitalize(filters.status), 'status'));
-    }
-    if (filters.tag) {
-        container.appendChild(makeFilterChip('Tag: ' + filters.tag, 'tag'));
-    }
-    if (filters.after) {
-        container.appendChild(makeFilterChip('From: ' + filters.after, 'after', () => {
-            document.getElementById('filter-after').value = '';
-        }));
-    }
-    if (filters.before) {
-        container.appendChild(makeFilterChip('To: ' + filters.before, 'before', () => {
-            document.getElementById('filter-before').value = '';
-        }));
-    }
+function formatPST(dateStr) {
+    if (!dateStr) return '';
+    const date = new Date(dateStr + 'Z');
+    const pst = new Date(date.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
+    const mon = String(pst.getMonth() + 1).padStart(2, '0');
+    const day = String(pst.getDate()).padStart(2, '0');
+    const h = String(pst.getHours()).padStart(2, '0');
+    const m = String(pst.getMinutes()).padStart(2, '0');
+    return `${pst.getFullYear()}-${mon}-${day} ${h}:${m} ${DAYS[pst.getDay()]}`;
 }
 
-function makeFilterChip(text, filterKey, extraClear) {
-    const chip = document.createElement('span');
-    chip.className = 'filter-chip';
-    chip.innerHTML = esc(text) + ' <button class="filter-chip-clear">&times;</button>';
-    chip.querySelector('button').addEventListener('click', () => {
-        filters[filterKey] = '';
-        if (extraClear) extraClear();
-        filterChanged();
-    });
-    return chip;
+function timeAgo(dateStr) {
+    if (!dateStr) return '';
+    const date = new Date(dateStr + 'Z');
+    const diff = (Date.now() - date.getTime()) / 1000;
+    if (diff < 60) return 'just now';
+    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+    return Math.floor(diff / 86400) + 'd ago';
 }
+
+function debounce(fn, ms) {
+    let timer;
+    return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };
+}
+
+// ====== Shared column prefs ======
 
 function loadColumnPrefs() {
     const saved = localStorage.getItem('xm-columns');
@@ -147,395 +96,12 @@ function saveColumnPrefs() {
     localStorage.setItem('xm-columns', JSON.stringify(visible));
 }
 
-function buildColumnPicker() {
-    const dropdown = document.getElementById('col-picker-dropdown');
-    dropdown.innerHTML = '';
-    const toggleable = ALL_COLUMNS.filter(c => !c.fixed && c.label);
-    for (const col of toggleable) {
-        const label = document.createElement('label');
-        const cb = document.createElement('input');
-        cb.type = 'checkbox';
-        cb.checked = visibleColumns.has(col.key);
-        cb.addEventListener('change', () => {
-            if (cb.checked) visibleColumns.add(col.key);
-            else visibleColumns.delete(col.key);
-            updateColumnPickerLabel(toggleable);
-            saveColumnPrefs();
-            loadExperiments();
-        });
-        label.appendChild(cb);
-        label.appendChild(document.createTextNode(' ' + col.label));
-        dropdown.appendChild(label);
-    }
-    updateColumnPickerLabel(toggleable);
-}
+function colVisible(key) { return visibleColumns.has(key); }
+function visColCount() { return ALL_COLUMNS.filter(c => colVisible(c.key)).length; }
 
-function updateColumnPickerLabel(toggleable) {
-    const btn = document.getElementById('col-picker-btn');
-    const onCount = toggleable.filter(c => visibleColumns.has(c.key)).length;
-    btn.textContent = (onCount === toggleable.length ? 'All' : onCount + '/' + toggleable.length) + ' ▾';
-}
+function refreshAllPanes() { for (const p of panes) p.loadExperiments(); }
 
-function pushFilterState() {
-    const params = new URLSearchParams();
-    if (filters.stage) params.set('stage', filters.stage);
-    if (filters.status) params.set('status', filters.status);
-    if (filters.tag) params.set('tag', filters.tag);
-    if (filters.search) params.set('search', filters.search);
-    if (filters.after) params.set('after', filters.after);
-    if (filters.before) params.set('before', filters.before);
-    if (filters.show_archived) params.set('show_archived', '1');
-    const qs = params.toString();
-    const url = qs ? '?' + qs : window.location.pathname;
-    history.pushState({ ...filters }, '', url);
-}
-
-function restoreFilterState(state) {
-    filters.stage = (state && state.stage) || '';
-    filters.status = (state && state.status) || '';
-    filters.tag = (state && state.tag) || '';
-    filters.search = (state && state.search) || '';
-    filters.after = (state && state.after) || '';
-    filters.before = (state && state.before) || '';
-    filters.show_archived = !!(state && state.show_archived);
-    document.getElementById('filter-search').value = filters.search;
-    document.getElementById('filter-after').value = filters.after;
-    document.getElementById('filter-before').value = filters.before;
-    document.getElementById('show-archived-toggle').checked = filters.show_archived;
-    renderActiveFilters();
-    loadExperiments();
-}
-
-function filterChanged() {
-    pushFilterState();
-    renderActiveFilters();
-    loadExperiments();
-}
-
-function bindEvents() {
-    document.getElementById('filter-search').addEventListener('input', debounce(() => {
-        filters.search = document.getElementById('filter-search').value;
-        filterChanged();
-    }, 300));
-    document.getElementById('filter-after').addEventListener('change', () => {
-        filters.after = document.getElementById('filter-after').value;
-        filterChanged();
-    });
-    document.getElementById('filter-before').addEventListener('change', () => {
-        filters.before = document.getElementById('filter-before').value;
-        filterChanged();
-    });
-    document.getElementById('show-archived-toggle').addEventListener('change', (e) => {
-        filters.show_archived = e.target.checked;
-        filterChanged();
-    });
-    document.getElementById('detailed-view-toggle').addEventListener('change', (e) => {
-        document.querySelector('.table-wrap').classList.toggle('detailed-view', e.target.checked);
-    });
-    document.getElementById('compare-btn').addEventListener('click', handleCompare);
-    document.getElementById('bulk-tag-btn').addEventListener('click', showBulkTagModal);
-    document.getElementById('new-experiment-btn').addEventListener('click', showNewExperimentModal);
-    document.getElementById('modal-close').addEventListener('click', closeModal);
-    document.getElementById('modal-cancel').addEventListener('click', closeModal);
-
-    const pickerBtn = document.getElementById('col-picker-btn');
-    const pickerDrop = document.getElementById('col-picker-dropdown');
-    pickerBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        pickerDrop.style.display = pickerDrop.style.display === 'none' ? 'block' : 'none';
-    });
-    document.addEventListener('click', () => { pickerDrop.style.display = 'none'; });
-    pickerDrop.addEventListener('click', (e) => e.stopPropagation());
-}
-
-function colVisible(key) {
-    return visibleColumns.has(key);
-}
-
-function visColCount() {
-    return ALL_COLUMNS.filter(c => colVisible(c.key)).length;
-}
-
-// --- Experiment list ---
-
-async function loadExperiments() {
-    const params = new URLSearchParams();
-    if (filters.stage) params.set('stage_id', filters.stage);
-    if (filters.status) params.set('status', filters.status);
-    if (filters.search) params.set('search', filters.search);
-    if (filters.tag) params.set('tag', filters.tag);
-    if (filters.after) params.set('after', filters.after);
-    if (filters.before) params.set('before', filters.before);
-    if (filters.show_archived) params.set('show_archived', '1');
-
-    const experiments = sortExperiments(await API.get('/api/experiments?' + params.toString()));
-
-    const thead = document.getElementById('experiment-thead');
-    thead.innerHTML = '';
-    const headTr = document.createElement('tr');
-    for (const col of ALL_COLUMNS) {
-        if (!colVisible(col.key)) continue;
-        const th = document.createElement('th');
-        if (col.key === 'check') th.className = 'col-check';
-        else if (col.key === 'expand') th.className = 'col-expand';
-        if (SORTABLE.has(col.key)) {
-            th.classList.add('sortable');
-            th.dataset.sortKey = col.key;
-            let indicator = '';
-            if (sortKey === col.key) indicator = sortDir === 'asc' ? ' ▲' : ' ▼';
-            th.textContent = col.label + indicator;
-            th.addEventListener('click', () => {
-                if (sortKey === col.key) {
-                    sortDir = sortDir === 'asc' ? 'desc' : 'asc';
-                } else {
-                    sortKey = col.key;
-                    sortDir = 'asc';
-                }
-                loadExperiments();
-            });
-        } else {
-            th.textContent = col.label;
-        }
-        headTr.appendChild(th);
-    }
-    thead.appendChild(headTr);
-
-    const tbody = document.getElementById('experiment-tbody');
-    const emptyState = document.getElementById('empty-state');
-    tbody.innerHTML = '';
-
-    displayedCount = experiments.length;
-    updateStatusCounts();
-
-    if (experiments.length === 0) {
-        emptyState.style.display = 'flex';
-        return;
-    }
-    emptyState.style.display = 'none';
-
-    for (const exp of experiments) {
-        const tr = document.createElement('tr');
-        tr.className = 'exp-row';
-        tr.dataset.id = exp.id;
-        if (exp.id === expandedId) tr.classList.add('expanded');
-        if (exp.archived) tr.classList.add('archived');
-
-        const displayAlias = exp.alias || exp.name;
-        const tagBadges = (exp.tags || []).map(t =>
-            `<span class="badge badge-tag clickable-filter" data-filter-tag="${esc(t.name)}">${esc(t.name)}</span>`
-        ).join('<br>') || '<span class="text-muted">—</span>';
-
-        const cells = {
-            check:   `<td class="col-check"><input type="checkbox" data-id="${exp.id}" ${checkedIds.has(exp.id) ? 'checked' : ''}></td>`,
-            expand:  `<td class="col-expand"><span class="expand-toggle">&#9654;</span></td>`,
-            name:    `<td>${esc(exp.name)}</td>`,
-            alias:   `<td title="${esc(exp.notes || '')}">${esc(displayAlias)}${exp.notes ? '<div class="notes-preview">' + esc(exp.notes) + '</div>' : ''}</td>`,
-            stage:   `<td><span class="badge badge-${exp.stage_category} clickable-filter" data-filter-stage="${exp.stage_id}">${capitalize(exp.stage_name)}</span></td>`,
-            status:  `<td><span class="badge badge-${exp.status} clickable-filter" data-filter-status="${exp.status}">${capitalize(exp.status)}</span></td>`,
-            tags:    `<td>${tagBadges}</td>`,
-            parent:  `<td>${renderParentLinksCompact(exp.parents)}</td>`,
-            started: `<td>${formatPST(exp.created_at)}</td>`,
-            updated: `<td>${timeAgo(exp.updated_at)}</td>`,
-            actions: `<td class="col-actions"><button class="icon-btn edit-btn" data-id="${exp.id}" title="Edit">✎</button><a class="icon-btn tree-btn" href="/tree/${exp.id}" target="_blank" title="Dep tree"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="2.5" r="1.5"/><circle cx="3" cy="13" r="1.5"/><circle cx="13" cy="13" r="1.5"/><line x1="8" y1="4" x2="8" y2="8"/><line x1="8" y1="8" x2="3" y2="11.5"/><line x1="8" y1="8" x2="13" y2="11.5"/></svg></a><button class="icon-btn archive-btn" data-id="${exp.id}" title="${exp.archived ? 'Unarchive' : 'Archive'}">${exp.archived
-? '<svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M1 1h14v4H1V1zm1 5h12v9H2V6zm5 4V8h2v2h1.5L8 12.5 6.5 10H8z"/></svg>'
-: '<svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M1 1h14v4H1V1zm1 5h12v9H2V6zm4 2v1h4V8H6z"/></svg>'
-}</button></td>`,
-        };
-
-        let html = '';
-        for (const col of ALL_COLUMNS) {
-            if (!colVisible(col.key)) continue;
-            html += cells[col.key];
-        }
-        tr.innerHTML = html;
-
-        tr.addEventListener('click', (e) => {
-            if (e.target.type === 'checkbox' || e.target.closest('.edit-btn') || e.target.closest('.archive-btn') || e.target.closest('.tree-btn') || e.target.closest('.parent-link')) return;
-            const filter = e.target.closest('.clickable-filter');
-            if (filter) {
-                if (filter.dataset.filterStage) {
-                    filters.stage = filter.dataset.filterStage;
-                    filterChanged();
-                } else if (filter.dataset.filterStatus) {
-                    filters.status = filter.dataset.filterStatus;
-                    filterChanged();
-                } else if (filter.dataset.filterTag) {
-                    filters.tag = filter.dataset.filterTag;
-                    filterChanged();
-                }
-                return;
-            }
-            toggleDetail(exp.id);
-        });
-
-        const cb = tr.querySelector('input[type=checkbox]');
-        if (cb) {
-            cb.addEventListener('change', () => {
-                if (cb.checked) checkedIds.add(exp.id);
-                else checkedIds.delete(exp.id);
-                updateCompareButton();
-            });
-        }
-
-        const editBtn = tr.querySelector('.edit-btn');
-        if (editBtn) editBtn.addEventListener('click', () => showEditExperimentModal(exp.id));
-        const archiveBtn = tr.querySelector('.archive-btn');
-        if (archiveBtn) archiveBtn.addEventListener('click', () => handleArchiveExperiment(exp));
-
-        tbody.appendChild(tr);
-
-        if (exp.id === expandedId) {
-            loadDetailRow(exp.id, tr);
-        }
-    }
-}
-
-function updateCompareButton() {
-    const btn = document.getElementById('compare-btn');
-    btn.textContent = `Compare (${checkedIds.size})`;
-    btn.disabled = checkedIds.size < 2;
-    const tagBtn = document.getElementById('bulk-tag-btn');
-    tagBtn.textContent = `Tags (${checkedIds.size})`;
-    tagBtn.disabled = checkedIds.size < 1;
-    updateStatusCounts();
-}
-
-function updateStatusCounts() {
-    const el = document.getElementById('status-counts');
-    let text = `total ${displayedCount} experiment${displayedCount !== 1 ? 's' : ''}, ${checkedIds.size} selected`;
-    el.textContent = text;
-}
-
-// --- Expandable detail row ---
-
-async function toggleDetail(expId) {
-    const tbody = document.getElementById('experiment-tbody');
-    const mainRow = tbody.querySelector(`.exp-row[data-id="${expId}"]`);
-    const existingDetail = tbody.querySelector(`.detail-row[data-id="${expId}"]`);
-
-    if (existingDetail) {
-        existingDetail.remove();
-        mainRow.classList.remove('expanded');
-        expandedId = null;
-        return;
-    }
-
-    const prevDetail = tbody.querySelector('.detail-row');
-    if (prevDetail) {
-        const prevId = prevDetail.dataset.id;
-        prevDetail.remove();
-        const prevRow = tbody.querySelector(`.exp-row[data-id="${prevId}"]`);
-        if (prevRow) prevRow.classList.remove('expanded');
-    }
-
-    expandedId = expId;
-    mainRow.classList.add('expanded');
-    await loadDetailRow(expId, mainRow);
-}
-
-async function loadDetailRow(expId, afterRow) {
-    const exp = await API.get('/api/experiments/' + expId);
-    const tbody = document.getElementById('experiment-tbody');
-
-    const old = tbody.querySelector(`.detail-row[data-id="${expId}"]`);
-    if (old) old.remove();
-
-    const mainRow = tbody.querySelector(`.exp-row[data-id="${expId}"]`);
-    if (mainRow && colVisible('parent')) {
-        const parentIdx = ALL_COLUMNS.filter(c => colVisible(c.key)).findIndex(c => c.key === 'parent');
-        if (parentIdx >= 0 && mainRow.children[parentIdx]) {
-            mainRow.children[parentIdx].innerHTML = renderParentLinks(exp.parents);
-        }
-    }
-
-    const detailTr = document.createElement('tr');
-    detailTr.className = 'detail-row';
-    detailTr.dataset.id = expId;
-
-    const td = document.createElement('td');
-    td.colSpan = visColCount();
-
-    td.innerHTML = `
-        <div class="detail-inner">
-            <div class="detail-col">
-                <h4>Lineage</h4>
-                <div style="margin-bottom:6px">
-                    <strong>Name:</strong> ${esc(exp.name)}${exp.alias ? ' <span class="text-muted">(' + esc(exp.alias) + ')</span>' : ''}
-                </div>
-                <div style="margin-bottom:6px">
-                    <strong>Parents:</strong> ${renderParentLinks(exp.parents)}
-                    <button class="btn btn-sm btn-primary add-parent-btn">Add</button>
-                    <a class="icon-btn" href="/tree/${expId}" target="_blank" title="Dep tree"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="2.5" r="1.5"/><circle cx="3" cy="13" r="1.5"/><circle cx="13" cy="13" r="1.5"/><line x1="8" y1="4" x2="8" y2="8"/><line x1="8" y1="8" x2="3" y2="11.5"/><line x1="8" y1="8" x2="13" y2="11.5"/></svg></a>
-                </div>
-                ${renderWandbLink(exp)}
-                <h4 style="margin-top:10px">Tags</h4>
-                <div class="tag-list">${renderTags(exp.tags, expId)}</div>
-                <div class="tag-add" style="margin-top:4px">
-                    <input class="tag-input" placeholder="Add tag…" style="width:100px;font-size:10px;padding:2px 4px;border:1px solid #e0e0e0;border-radius:3px">
-                    <button class="btn btn-sm add-tag-btn">+</button>
-                </div>
-                <h4 style="margin-top:10px">Notes</h4>
-                <textarea class="detail-notes" data-id="${expId}" rows="3">${esc(exp.notes || '')}</textarea>
-                <button class="btn btn-sm btn-primary save-notes-btn" data-id="${expId}">Save</button>
-            </div>
-            <div class="detail-col">
-                <h4>Eval Runs</h4>
-                ${renderEvalTable(exp.eval_runs)}
-                <button class="btn btn-sm add-eval-btn">+ Add eval</button>
-            </div>
-        </div>
-    `;
-
-    detailTr.appendChild(td);
-    afterRow.after(detailTr);
-
-    td.querySelector('.add-parent-btn').addEventListener('click', () => showAddParentModal(expId));
-    td.querySelector('.add-eval-btn').addEventListener('click', () => showAddEvalModal(expId));
-    td.querySelector('.save-notes-btn').addEventListener('click', async () => {
-        const notes = td.querySelector('.detail-notes').value;
-        await API.put('/api/experiments/' + expId, { notes });
-    });
-
-    const tagInput = td.querySelector('.tag-input');
-    const addTagBtn = td.querySelector('.add-tag-btn');
-    const addTag = async () => {
-        const name = tagInput.value.trim();
-        if (!name) return;
-        await API.post(`/api/experiments/${expId}/tags`, { name });
-        allTags = await API.get('/api/tags');
-                await loadDetailRow(expId, mainRow);
-        await loadExperiments();
-    };
-    addTagBtn.addEventListener('click', addTag);
-    tagInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addTag(); });
-
-    td.querySelectorAll('.remove-tag-btn').forEach(btn => {
-        btn.addEventListener('click', async () => {
-            const tagId = parseInt(btn.dataset.tagId);
-            await API.del(`/api/experiments/${expId}/tags/${tagId}`);
-            await loadDetailRow(expId, mainRow);
-            await loadExperiments();
-        });
-    });
-
-    td.querySelectorAll('.remove-parent-btn').forEach(btn => {
-        btn.addEventListener('click', async () => {
-            const parentId = parseInt(btn.dataset.parentId);
-            if (!confirm('Remove this parent relationship?')) return;
-            await API.del(`/api/experiments/${expId}/parents/${parentId}`);
-            await loadDetailRow(expId, mainRow);
-        });
-    });
-
-    td.querySelectorAll('.delete-eval-btn').forEach(btn => {
-        btn.addEventListener('click', async () => {
-            const evalId = parseInt(btn.dataset.evalId);
-            if (!confirm('Delete this eval run?')) return;
-            await API.del('/api/evals/' + evalId);
-            await loadDetailRow(expId, mainRow);
-        });
-    });
-}
+// ====== Render helpers ======
 
 function renderParentLinksCompact(parents) {
     if (!parents || parents.length === 0) return '<span class="text-muted">—</span>';
@@ -554,7 +120,7 @@ function renderParentLinks(parents) {
     }).join(' ');
 }
 
-function renderTags(tags, expId) {
+function renderTags(tags) {
     if (!tags || tags.length === 0) return '<span class="text-muted" style="font-size:10px">No tags</span>';
     return tags.map(t =>
         `<span class="badge badge-tag">${esc(t.name)} <button class="remove-tag-btn" data-tag-id="${t.id}" title="Remove">&times;</button></span>`
@@ -590,43 +156,599 @@ function renderEvalTable(evals) {
     return html;
 }
 
-// --- Navigate to experiment ---
+function stageOptions(selectedId) {
+    return stages.map(s =>
+        `<option value="${s.id}" ${s.id === selectedId ? 'selected' : ''}>${capitalize(s.name)}</option>`
+    ).join('');
+}
+
+function statusOptions(selected) {
+    return ['pending','running','stopped','completed','failed','cancelled'].map(s =>
+        `<option value="${s}" ${s === selected ? 'selected' : ''}>${capitalize(s)}</option>`
+    ).join('');
+}
+
+// ====== Pane class ======
+
+class Pane {
+    constructor(container, isPrimary) {
+        this.container = container;
+        this.isPrimary = isPrimary;
+        this.filters = { stage: '', status: '', tag: '', search: '', after: '', before: '', show_archived: false };
+        this.checkedIds = new Set();
+        this.expandedId = null;
+        this.sortKey = '';
+        this.sortDir = 'asc';
+        this.displayedCount = 0;
+        this.merged = false;
+        this.buildDOM();
+        this.buildColumnPicker();
+        this.bindEvents();
+    }
+
+    $(sel) { return this.el.querySelector(sel); }
+
+    buildDOM() {
+        this.el = document.createElement('div');
+        this.el.className = 'pane';
+        this.el.innerHTML = `
+            <div class="pane-search">
+                <input type="text" class="pane-search-input" placeholder="Search experiments…">
+            </div>
+            <div class="toolbar">
+                <div class="toolbar-row">
+                    <div class="filter-group">
+                        <span class="filter-label">From</span>
+                        <input type="date" class="date-input filter-after">
+                    </div>
+                    <div class="filter-group">
+                        <span class="filter-label">To</span>
+                        <input type="date" class="date-input filter-before">
+                    </div>
+                    <div class="filter-group col-picker-wrap">
+                        <span class="filter-label">Columns</span>
+                        <button class="filter-select col-picker-btn">All ▾</button>
+                        <div class="col-picker-dropdown" style="display:none"></div>
+                    </div>
+                    <div class="active-filters"></div>
+                    <label class="archived-toggle"><input type="checkbox" class="show-archived-toggle"> Show archived</label>
+                    <label class="archived-toggle"><input type="checkbox" class="detailed-view-toggle"> Detailed view</label>
+                    <label class="archived-toggle"><input type="checkbox" class="merge-toggle"> Merge tables</label>
+                </div>
+                <div class="toolbar-row">
+                    <div class="toolbar-actions">
+                        <button class="btn btn-sm btn-primary compare-btn" disabled>Compare (0)</button>
+                        <button class="btn btn-sm btn-primary bulk-tag-btn" disabled>Tags (0)</button>
+                        <button class="btn btn-sm btn-primary new-experiment-btn">+ New</button>
+                    </div>
+                </div>
+                <div class="toolbar-row">
+                    <span class="status-counts"></span>
+                </div>
+            </div>
+            <div class="tables-area">
+                <div class="table-section section-ongoing">
+                    <div class="section-header">Ongoing</div>
+                    <div class="table-wrap">
+                        <table><thead></thead><tbody></tbody></table>
+                        <div class="empty-state" style="display:none">No ongoing experiments.</div>
+                    </div>
+                </div>
+                <div class="table-section section-finished">
+                    <div class="section-header">Finished</div>
+                    <div class="table-wrap">
+                        <table><thead></thead><tbody></tbody></table>
+                        <div class="empty-state" style="display:none">No finished experiments.</div>
+                    </div>
+                </div>
+                <div class="table-section section-merged" style="display:none">
+                    <div class="table-wrap">
+                        <table><thead></thead><tbody></tbody></table>
+                        <div class="empty-state" style="display:none">No experiments yet.</div>
+                    </div>
+                </div>
+            </div>
+        `;
+        this.container.appendChild(this.el);
+    }
+
+    bindEvents() {
+        this.$('.pane-search-input').addEventListener('input', debounce(() => {
+            this.filters.search = this.$('.pane-search-input').value;
+            this.filterChanged();
+        }, 300));
+        this.$('.filter-after').addEventListener('change', () => {
+            this.filters.after = this.$('.filter-after').value;
+            this.filterChanged();
+        });
+        this.$('.filter-before').addEventListener('change', () => {
+            this.filters.before = this.$('.filter-before').value;
+            this.filterChanged();
+        });
+        this.$('.show-archived-toggle').addEventListener('change', (e) => {
+            this.filters.show_archived = e.target.checked;
+            this.filterChanged();
+        });
+        this.$('.detailed-view-toggle').addEventListener('change', (e) => {
+            this.el.querySelectorAll('.table-wrap').forEach(tw =>
+                tw.classList.toggle('detailed-view', e.target.checked)
+            );
+        });
+        this.$('.merge-toggle').addEventListener('change', (e) => {
+            this.merged = e.target.checked;
+            this.loadExperiments();
+        });
+        this.$('.compare-btn').addEventListener('click', () => this.handleCompare());
+        this.$('.bulk-tag-btn').addEventListener('click', () => showBulkTagModal(this));
+        this.$('.new-experiment-btn').addEventListener('click', () => showNewExperimentModal());
+
+        const pickerBtn = this.$('.col-picker-btn');
+        const pickerDrop = this.$('.col-picker-dropdown');
+        pickerBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            pickerDrop.style.display = pickerDrop.style.display === 'none' ? 'block' : 'none';
+        });
+        pickerDrop.addEventListener('click', (e) => e.stopPropagation());
+    }
+
+    buildColumnPicker() {
+        const dropdown = this.$('.col-picker-dropdown');
+        dropdown.innerHTML = '';
+        const toggleable = ALL_COLUMNS.filter(c => !c.fixed && c.label);
+        for (const col of toggleable) {
+            const label = document.createElement('label');
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.checked = visibleColumns.has(col.key);
+            cb.addEventListener('change', () => {
+                if (cb.checked) visibleColumns.add(col.key);
+                else visibleColumns.delete(col.key);
+                saveColumnPrefs();
+                for (const p of panes) { p.buildColumnPicker(); p.loadExperiments(); }
+            });
+            label.appendChild(cb);
+            label.appendChild(document.createTextNode(' ' + col.label));
+            dropdown.appendChild(label);
+        }
+        const btn = this.$('.col-picker-btn');
+        const onCount = toggleable.filter(c => visibleColumns.has(c.key)).length;
+        btn.textContent = (onCount === toggleable.length ? 'All' : onCount + '/' + toggleable.length) + ' ▾';
+    }
+
+    filterChanged() {
+        if (this.isPrimary) pushFilterState(this.filters);
+        this.renderActiveFilters();
+        this.loadExperiments();
+    }
+
+    renderActiveFilters() {
+        const container = this.$('.active-filters');
+        container.innerHTML = '';
+        if (this.filters.stage) {
+            const s = stages.find(s => String(s.id) === String(this.filters.stage));
+            const label = s ? capitalize(s.name) : this.filters.stage;
+            container.appendChild(this.makeFilterChip('Stage: ' + label, 'stage'));
+        }
+        if (this.filters.status) {
+            container.appendChild(this.makeFilterChip('Status: ' + capitalize(this.filters.status), 'status'));
+        }
+        if (this.filters.tag) {
+            container.appendChild(this.makeFilterChip('Tag: ' + this.filters.tag, 'tag'));
+        }
+        if (this.filters.after) {
+            container.appendChild(this.makeFilterChip('From: ' + this.filters.after, 'after', () => {
+                this.$('.filter-after').value = '';
+            }));
+        }
+        if (this.filters.before) {
+            container.appendChild(this.makeFilterChip('To: ' + this.filters.before, 'before', () => {
+                this.$('.filter-before').value = '';
+            }));
+        }
+    }
+
+    makeFilterChip(text, filterKey, extraClear) {
+        const chip = document.createElement('span');
+        chip.className = 'filter-chip';
+        chip.innerHTML = esc(text) + ' <button class="filter-chip-clear">&times;</button>';
+        chip.querySelector('button').addEventListener('click', () => {
+            this.filters[filterKey] = '';
+            if (extraClear) extraClear();
+            this.filterChanged();
+        });
+        return chip;
+    }
+
+    buildTableHead(theadEl) {
+        theadEl.innerHTML = '';
+        const headTr = document.createElement('tr');
+        for (const col of ALL_COLUMNS) {
+            if (!colVisible(col.key)) continue;
+            const th = document.createElement('th');
+            if (col.key === 'check') th.className = 'col-check';
+            else if (col.key === 'expand') th.className = 'col-expand';
+            if (SORTABLE.has(col.key)) {
+                th.classList.add('sortable');
+                let indicator = '';
+                if (this.sortKey === col.key) indicator = this.sortDir === 'asc' ? ' ▲' : ' ▼';
+                th.textContent = col.label + indicator;
+                th.addEventListener('click', () => {
+                    if (this.sortKey === col.key) {
+                        this.sortDir = this.sortDir === 'asc' ? 'desc' : 'asc';
+                    } else {
+                        this.sortKey = col.key;
+                        this.sortDir = 'asc';
+                    }
+                    this.loadExperiments();
+                });
+            } else {
+                th.textContent = col.label;
+            }
+            headTr.appendChild(th);
+        }
+        theadEl.appendChild(headTr);
+    }
+
+    renderRows(experiments, tbodyEl) {
+        tbodyEl.innerHTML = '';
+        for (const exp of experiments) {
+            const tr = document.createElement('tr');
+            tr.className = 'exp-row';
+            tr.dataset.id = exp.id;
+            if (exp.id === this.expandedId) tr.classList.add('expanded');
+            if (exp.archived) tr.classList.add('archived');
+
+            const displayAlias = exp.alias || exp.name;
+            const tagBadges = (exp.tags || []).map(t =>
+                `<span class="badge badge-tag clickable-filter" data-filter-tag="${esc(t.name)}">${esc(t.name)}</span>`
+            ).join('<br>') || '<span class="text-muted">—</span>';
+
+            const cells = {
+                check:   `<td class="col-check"><input type="checkbox" data-id="${exp.id}" ${this.checkedIds.has(exp.id) ? 'checked' : ''}></td>`,
+                expand:  `<td class="col-expand"><span class="expand-toggle">&#9654;</span></td>`,
+                name:    `<td>${esc(exp.name)}</td>`,
+                alias:   `<td title="${esc(exp.notes || '')}">${esc(displayAlias)}${exp.notes ? '<div class="notes-preview">' + esc(exp.notes) + '</div>' : ''}</td>`,
+                stage:   `<td><span class="badge badge-${exp.stage_category} clickable-filter" data-filter-stage="${exp.stage_id}">${capitalize(exp.stage_name)}</span></td>`,
+                status:  `<td><span class="badge badge-${exp.status} clickable-filter" data-filter-status="${exp.status}">${capitalize(exp.status)}</span></td>`,
+                tags:    `<td>${tagBadges}</td>`,
+                parent:  `<td>${renderParentLinksCompact(exp.parents)}</td>`,
+                started: `<td>${formatPST(exp.created_at)}</td>`,
+                updated: `<td>${timeAgo(exp.updated_at)}</td>`,
+                actions: `<td class="col-actions"><button class="icon-btn edit-btn" data-id="${exp.id}" title="Edit">✎</button><a class="icon-btn tree-btn" href="/tree/${exp.id}" target="_blank" title="Dep tree"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="2.5" r="1.5"/><circle cx="3" cy="13" r="1.5"/><circle cx="13" cy="13" r="1.5"/><line x1="8" y1="4" x2="8" y2="8"/><line x1="8" y1="8" x2="3" y2="11.5"/><line x1="8" y1="8" x2="13" y2="11.5"/></svg></a><button class="icon-btn archive-btn" data-id="${exp.id}" title="${exp.archived ? 'Unarchive' : 'Archive'}">${exp.archived
+                    ? '<svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M1 1h14v4H1V1zm1 5h12v9H2V6zm5 4V8h2v2h1.5L8 12.5 6.5 10H8z"/></svg>'
+                    : '<svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor"><path d="M1 1h14v4H1V1zm1 5h12v9H2V6zm4 2v1h4V8H6z"/></svg>'
+                }</button></td>`,
+            };
+
+            let html = '';
+            for (const col of ALL_COLUMNS) {
+                if (!colVisible(col.key)) continue;
+                html += cells[col.key];
+            }
+            tr.innerHTML = html;
+
+            tr.addEventListener('click', (e) => {
+                if (e.target.type === 'checkbox' || e.target.closest('.edit-btn') || e.target.closest('.archive-btn') || e.target.closest('.tree-btn') || e.target.closest('.parent-link')) return;
+                const filter = e.target.closest('.clickable-filter');
+                if (filter) {
+                    if (filter.dataset.filterStage) { this.filters.stage = filter.dataset.filterStage; this.filterChanged(); }
+                    else if (filter.dataset.filterStatus) { this.filters.status = filter.dataset.filterStatus; this.filterChanged(); }
+                    else if (filter.dataset.filterTag) { this.filters.tag = filter.dataset.filterTag; this.filterChanged(); }
+                    return;
+                }
+                this.toggleDetail(exp.id);
+            });
+
+            const cb = tr.querySelector('input[type=checkbox]');
+            if (cb) {
+                cb.addEventListener('change', () => {
+                    if (cb.checked) this.checkedIds.add(exp.id);
+                    else this.checkedIds.delete(exp.id);
+                    this.updateCompareButton();
+                });
+            }
+
+            const editBtn = tr.querySelector('.edit-btn');
+            if (editBtn) editBtn.addEventListener('click', () => showEditExperimentModal(exp.id));
+            const archiveBtn = tr.querySelector('.archive-btn');
+            if (archiveBtn) archiveBtn.addEventListener('click', () => this.handleArchiveExperiment(exp));
+
+            tbodyEl.appendChild(tr);
+
+            if (exp.id === this.expandedId) {
+                this.loadDetailRow(exp.id, tr);
+            }
+        }
+    }
+
+    async loadExperiments() {
+        const params = new URLSearchParams();
+        if (this.filters.stage) params.set('stage_id', this.filters.stage);
+        if (this.filters.status) params.set('status', this.filters.status);
+        if (this.filters.search) params.set('search', this.filters.search);
+        if (this.filters.tag) params.set('tag', this.filters.tag);
+        if (this.filters.after) params.set('after', this.filters.after);
+        if (this.filters.before) params.set('before', this.filters.before);
+        if (this.filters.show_archived) params.set('show_archived', '1');
+
+        let experiments = await API.get('/api/experiments?' + params.toString());
+        if (this.sortKey) {
+            const dir = this.sortDir === 'asc' ? 1 : -1;
+            experiments = [...experiments].sort((a, b) => {
+                const va = sortValue(a, this.sortKey);
+                const vb = sortValue(b, this.sortKey);
+                if (va < vb) return -1 * dir;
+                if (va > vb) return 1 * dir;
+                return 0;
+            });
+        }
+
+        const ongoingSection = this.$('.section-ongoing');
+        const finishedSection = this.$('.section-finished');
+        const mergedSection = this.$('.section-merged');
+
+        if (this.merged) {
+            ongoingSection.style.display = 'none';
+            finishedSection.style.display = 'none';
+            mergedSection.style.display = '';
+
+            this.buildTableHead(mergedSection.querySelector('thead'));
+            this.renderRows(experiments, mergedSection.querySelector('tbody'));
+            mergedSection.querySelector('.empty-state').style.display = experiments.length === 0 ? 'flex' : 'none';
+        } else {
+            ongoingSection.style.display = '';
+            finishedSection.style.display = '';
+            mergedSection.style.display = 'none';
+
+            const ongoing = experiments.filter(e => ONGOING_STATUSES.has(e.status));
+            const finished = experiments.filter(e => !ONGOING_STATUSES.has(e.status));
+
+            this.buildTableHead(ongoingSection.querySelector('thead'));
+            this.renderRows(ongoing, ongoingSection.querySelector('tbody'));
+            ongoingSection.querySelector('.section-header').textContent = `Ongoing (${ongoing.length})`;
+            ongoingSection.querySelector('.empty-state').style.display = ongoing.length === 0 ? 'flex' : 'none';
+
+            this.buildTableHead(finishedSection.querySelector('thead'));
+            this.renderRows(finished, finishedSection.querySelector('tbody'));
+            finishedSection.querySelector('.section-header').textContent = `Finished (${finished.length})`;
+            finishedSection.querySelector('.empty-state').style.display = finished.length === 0 ? 'flex' : 'none';
+        }
+
+        this.displayedCount = experiments.length;
+        this.updateStatusCounts();
+    }
+
+    updateCompareButton() {
+        const btn = this.$('.compare-btn');
+        btn.textContent = `Compare (${this.checkedIds.size})`;
+        btn.disabled = this.checkedIds.size < 2;
+        const tagBtn = this.$('.bulk-tag-btn');
+        tagBtn.textContent = `Tags (${this.checkedIds.size})`;
+        tagBtn.disabled = this.checkedIds.size < 1;
+        this.updateStatusCounts();
+    }
+
+    updateStatusCounts() {
+        this.$('.status-counts').textContent =
+            `total ${this.displayedCount} experiment${this.displayedCount !== 1 ? 's' : ''}, ${this.checkedIds.size} selected`;
+    }
+
+    async toggleDetail(expId) {
+        const mainRow = this.el.querySelector(`.exp-row[data-id="${expId}"]`);
+        if (!mainRow) return;
+        const tbody = mainRow.closest('tbody');
+        const existingDetail = tbody.querySelector(`.detail-row[data-id="${expId}"]`);
+
+        if (existingDetail) {
+            existingDetail.remove();
+            mainRow.classList.remove('expanded');
+            this.expandedId = null;
+            return;
+        }
+
+        const prevDetail = this.el.querySelector('.detail-row');
+        if (prevDetail) {
+            const prevId = prevDetail.dataset.id;
+            prevDetail.remove();
+            const prevRow = this.el.querySelector(`.exp-row[data-id="${prevId}"]`);
+            if (prevRow) prevRow.classList.remove('expanded');
+        }
+
+        this.expandedId = expId;
+        mainRow.classList.add('expanded');
+        await this.loadDetailRow(expId, mainRow);
+    }
+
+    async loadDetailRow(expId, afterRow) {
+        const exp = await API.get('/api/experiments/' + expId);
+
+        const old = this.el.querySelector(`.detail-row[data-id="${expId}"]`);
+        if (old) old.remove();
+
+        const mainRow = this.el.querySelector(`.exp-row[data-id="${expId}"]`);
+        if (mainRow && colVisible('parent')) {
+            const parentIdx = ALL_COLUMNS.filter(c => colVisible(c.key)).findIndex(c => c.key === 'parent');
+            if (parentIdx >= 0 && mainRow.children[parentIdx]) {
+                mainRow.children[parentIdx].innerHTML = renderParentLinksCompact(exp.parents);
+            }
+        }
+
+        const detailTr = document.createElement('tr');
+        detailTr.className = 'detail-row';
+        detailTr.dataset.id = expId;
+
+        const td = document.createElement('td');
+        td.colSpan = visColCount();
+
+        td.innerHTML = `
+            <div class="detail-inner">
+                <div class="detail-col">
+                    <h4>Lineage</h4>
+                    <div style="margin-bottom:6px">
+                        <strong>Name:</strong> ${esc(exp.name)}${exp.alias ? ' <span class="text-muted">(' + esc(exp.alias) + ')</span>' : ''}
+                    </div>
+                    <div style="margin-bottom:6px">
+                        <strong>Parents:</strong> ${renderParentLinks(exp.parents)}
+                        <button class="btn btn-sm btn-primary add-parent-btn">Add</button>
+                        <a class="icon-btn" href="/tree/${expId}" target="_blank" title="Dep tree"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="2.5" r="1.5"/><circle cx="3" cy="13" r="1.5"/><circle cx="13" cy="13" r="1.5"/><line x1="8" y1="4" x2="8" y2="8"/><line x1="8" y1="8" x2="3" y2="11.5"/><line x1="8" y1="8" x2="13" y2="11.5"/></svg></a>
+                    </div>
+                    ${renderWandbLink(exp)}
+                    <h4 style="margin-top:10px">Tags</h4>
+                    <div class="tag-list">${renderTags(exp.tags)}</div>
+                    <div class="tag-add" style="margin-top:4px">
+                        <input class="tag-input" placeholder="Add tag…" style="width:100px;font-size:10px;padding:2px 4px;border:1px solid #e0e0e0;border-radius:3px">
+                        <button class="btn btn-sm add-tag-btn">+</button>
+                    </div>
+                    <h4 style="margin-top:10px">Notes</h4>
+                    <textarea class="detail-notes" data-id="${expId}" rows="3">${esc(exp.notes || '')}</textarea>
+                    <button class="btn btn-sm btn-primary save-notes-btn" data-id="${expId}">Save</button>
+                </div>
+                <div class="detail-col">
+                    <h4>Eval Runs</h4>
+                    ${renderEvalTable(exp.eval_runs)}
+                    <button class="btn btn-sm add-eval-btn">+ Add eval</button>
+                </div>
+            </div>
+        `;
+
+        detailTr.appendChild(td);
+        afterRow.after(detailTr);
+
+        td.querySelector('.add-parent-btn').addEventListener('click', () => showAddParentModal(expId));
+        td.querySelector('.add-eval-btn').addEventListener('click', () => showAddEvalModal(expId));
+        td.querySelector('.save-notes-btn').addEventListener('click', async () => {
+            const notes = td.querySelector('.detail-notes').value;
+            await API.put('/api/experiments/' + expId, { notes });
+        });
+
+        const tagInput = td.querySelector('.tag-input');
+        const addTagBtn = td.querySelector('.add-tag-btn');
+        const addTag = async () => {
+            const name = tagInput.value.trim();
+            if (!name) return;
+            await API.post(`/api/experiments/${expId}/tags`, { name });
+            allTags = await API.get('/api/tags');
+            refreshAllPanes();
+        };
+        addTagBtn.addEventListener('click', addTag);
+        tagInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') addTag(); });
+
+        td.querySelectorAll('.remove-tag-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const tagId = parseInt(btn.dataset.tagId);
+                await API.del(`/api/experiments/${expId}/tags/${tagId}`);
+                allTags = await API.get('/api/tags');
+                refreshAllPanes();
+            });
+        });
+
+        td.querySelectorAll('.remove-parent-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const parentId = parseInt(btn.dataset.parentId);
+                if (!confirm('Remove this parent relationship?')) return;
+                await API.del(`/api/experiments/${expId}/parents/${parentId}`);
+                refreshAllPanes();
+            });
+        });
+
+        td.querySelectorAll('.delete-eval-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const evalId = parseInt(btn.dataset.evalId);
+                if (!confirm('Delete this eval run?')) return;
+                await API.del('/api/evals/' + evalId);
+                refreshAllPanes();
+            });
+        });
+    }
+
+    async handleCompare() {
+        if (this.checkedIds.size < 2) return;
+        try {
+            const result = await API.post('/api/compare', { experiment_ids: [...this.checkedIds] });
+            if (result.warnings.length) alert(result.warnings.join('\n'));
+            for (const u of result.urls) window.open(u.url, '_blank');
+        } catch (err) {
+            alert(err.error || 'Compare failed');
+        }
+    }
+
+    async handleArchiveExperiment(exp) {
+        const action = exp.archived ? 'unarchive' : 'archive';
+        await API.post(`/api/experiments/${exp.id}/${action}`, {});
+        if (this.expandedId === exp.id) this.expandedId = null;
+        refreshAllPanes();
+    }
+
+    setFiltersFromURL(params) {
+        if (params.get('stage')) this.filters.stage = params.get('stage');
+        if (params.get('status')) this.filters.status = params.get('status');
+        if (params.get('tag')) this.filters.tag = params.get('tag');
+        if (params.get('after')) this.filters.after = params.get('after');
+        if (params.get('before')) this.filters.before = params.get('before');
+        if (params.get('show_archived')) {
+            this.filters.show_archived = true;
+            this.$('.show-archived-toggle').checked = true;
+        }
+        if (params.get('search')) {
+            this.filters.search = params.get('search');
+            this.$('.pane-search-input').value = this.filters.search;
+        }
+        if (this.filters.after) this.$('.filter-after').value = this.filters.after;
+        if (this.filters.before) this.$('.filter-before').value = this.filters.before;
+        this.renderActiveFilters();
+    }
+
+    restoreState(state) {
+        this.filters.stage = (state && state.stage) || '';
+        this.filters.status = (state && state.status) || '';
+        this.filters.tag = (state && state.tag) || '';
+        this.filters.search = (state && state.search) || '';
+        this.filters.after = (state && state.after) || '';
+        this.filters.before = (state && state.before) || '';
+        this.filters.show_archived = !!(state && state.show_archived);
+        this.$('.pane-search-input').value = this.filters.search;
+        this.$('.filter-after').value = this.filters.after;
+        this.$('.filter-before').value = this.filters.before;
+        this.$('.show-archived-toggle').checked = this.filters.show_archived;
+        this.renderActiveFilters();
+        this.loadExperiments();
+    }
+
+    destroy() {
+        this.el.remove();
+    }
+}
+
+// ====== URL state (primary pane only) ======
+
+function pushFilterState(filters) {
+    const params = new URLSearchParams();
+    if (filters.stage) params.set('stage', filters.stage);
+    if (filters.status) params.set('status', filters.status);
+    if (filters.tag) params.set('tag', filters.tag);
+    if (filters.search) params.set('search', filters.search);
+    if (filters.after) params.set('after', filters.after);
+    if (filters.before) params.set('before', filters.before);
+    if (filters.show_archived) params.set('show_archived', '1');
+    const qs = params.toString();
+    const url = qs ? '?' + qs : window.location.pathname;
+    history.pushState({ ...filters }, '', url);
+}
+
+// ====== Navigate to experiment ======
 
 window.scrollToExperiment = function(expId) {
-    const row = document.querySelector(`.exp-row[data-id="${expId}"]`);
-    if (row) {
-        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        toggleDetail(expId);
+    for (const pane of panes) {
+        const row = pane.el.querySelector(`.exp-row[data-id="${expId}"]`);
+        if (row) {
+            row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            pane.toggleDetail(expId);
+            return;
+        }
     }
 };
 
-// --- Compare ---
-
-async function handleCompare() {
-    if (checkedIds.size < 2) return;
-    try {
-        const result = await API.post('/api/compare', { experiment_ids: [...checkedIds] });
-        if (result.warnings.length) {
-            alert(result.warnings.join('\n'));
-        }
-        for (const u of result.urls) {
-            window.open(u.url, '_blank');
-        }
-    } catch (err) {
-        alert(err.error || 'Compare failed');
-    }
-}
-
-// --- Archive experiment ---
-
-async function handleArchiveExperiment(exp) {
-    const action = exp.archived ? 'unarchive' : 'archive';
-    await API.post(`/api/experiments/${exp.id}/${action}`, {});
-    if (expandedId === exp.id) expandedId = null;
-    await loadExperiments();
-}
-
-// --- Modals ---
+// ====== Modals ======
 
 function openModal(title, bodyHtml, onSubmit) {
     document.getElementById('modal-title').textContent = title;
@@ -640,18 +762,6 @@ function openModal(title, bodyHtml, onSubmit) {
 
 function closeModal() {
     document.getElementById('modal-overlay').style.display = 'none';
-}
-
-function stageOptions(selectedId) {
-    return stages.map(s =>
-        `<option value="${s.id}" ${s.id === selectedId ? 'selected' : ''}>${capitalize(s.name)}</option>`
-    ).join('');
-}
-
-function statusOptions(selected) {
-    return ['pending','running','stopped','completed','failed','cancelled'].map(s =>
-        `<option value="${s}" ${s === selected ? 'selected' : ''}>${capitalize(s)}</option>`
-    ).join('');
 }
 
 function showNewExperimentModal() {
@@ -688,7 +798,7 @@ function showNewExperimentModal() {
         if (!data.name) return alert('Name is required');
         await API.post('/api/experiments', data);
         allTags = await API.get('/api/tags');
-                await loadExperiments();
+        refreshAllPanes();
     });
 }
 
@@ -727,7 +837,7 @@ async function showEditExperimentModal(expId) {
         };
         await API.put('/api/experiments/' + expId, data);
         allTags = await API.get('/api/tags');
-                await loadExperiments();
+        refreshAllPanes();
     });
 }
 
@@ -751,7 +861,7 @@ async function showAddParentModal(expId) {
         const relation = document.getElementById('m-relation').value;
         if (!parentId) return alert('Select a parent experiment');
         await API.post(`/api/experiments/${expId}/parents`, { parent_id: parentId, relation });
-        await loadExperiments();
+        refreshAllPanes();
     });
 }
 
@@ -786,20 +896,18 @@ function showAddEvalModal(expId) {
             wandb_project: document.getElementById('m-eval-wandb-project').value || null,
             wandb_run_id: document.getElementById('m-eval-wandb-run-id').value || null,
         });
-        await loadExperiments();
+        refreshAllPanes();
     });
 }
 
-// --- Bulk tag modal ---
-
-function showBulkTagModal() {
-    if (checkedIds.size < 1) return;
+function showBulkTagModal(pane) {
+    if (pane.checkedIds.size < 1) return;
     const tagOptions = allTags.map(t =>
         `<option value="${esc(t.name)}">${esc(t.name)}</option>`
     ).join('');
 
     openModal('Manage Tags', `
-        <p style="font-size:11px;color:var(--text-muted);margin-bottom:12px">${checkedIds.size} experiment(s) selected</p>
+        <p style="font-size:11px;color:var(--text-muted);margin-bottom:12px">${pane.checkedIds.size} experiment(s) selected</p>
         <label>Add tag to all selected</label>
         <div style="display:flex;gap:6px">
             <input id="m-bulk-tag-add" placeholder="Tag name">
@@ -813,69 +921,53 @@ function showBulkTagModal() {
     `, () => closeModal());
 
     setTimeout(() => {
-        const addBtn = document.getElementById('m-bulk-tag-add-btn');
-        const removeBtn = document.getElementById('m-bulk-tag-remove-btn');
-
-        addBtn.addEventListener('click', async () => {
+        document.getElementById('m-bulk-tag-add-btn').addEventListener('click', async () => {
             const name = document.getElementById('m-bulk-tag-add').value.trim();
             if (!name) return;
-            await API.post('/api/experiments/bulk-add-tag', {
-                name, experiment_ids: [...checkedIds],
-            });
+            await API.post('/api/experiments/bulk-add-tag', { name, experiment_ids: [...pane.checkedIds] });
             allTags = await API.get('/api/tags');
-                        await loadExperiments();
+            refreshAllPanes();
             document.getElementById('m-bulk-tag-add').value = '';
         });
 
-        removeBtn.addEventListener('click', async () => {
+        document.getElementById('m-bulk-tag-remove-btn').addEventListener('click', async () => {
             const name = document.getElementById('m-bulk-tag-remove').value;
             if (!name) return;
-            await API.post('/api/experiments/bulk-remove-tag', {
-                name, experiment_ids: [...checkedIds],
-            });
+            await API.post('/api/experiments/bulk-remove-tag', { name, experiment_ids: [...pane.checkedIds] });
             allTags = await API.get('/api/tags');
-                        await loadExperiments();
+            refreshAllPanes();
         });
     }, 0);
 }
 
-// --- Utilities ---
+// ====== Init ======
 
-function esc(str) {
-    if (!str) return '';
-    const d = document.createElement('div');
-    d.textContent = str;
-    return d.innerHTML;
-}
+document.addEventListener('DOMContentLoaded', async () => {
+    [stages, allTags] = await Promise.all([
+        API.get('/api/stages'),
+        API.get('/api/tags'),
+    ]);
+    loadColumnPrefs();
 
-const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const container = document.getElementById('pane-container');
+    const primaryPane = new Pane(container, true);
+    panes.push(primaryPane);
 
-function formatPST(dateStr) {
-    if (!dateStr) return '';
-    const date = new Date(dateStr + 'Z');
-    const pst = new Date(date.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
-    const mon = String(pst.getMonth() + 1).padStart(2, '0');
-    const day = String(pst.getDate()).padStart(2, '0');
-    const h = String(pst.getHours()).padStart(2, '0');
-    const m = String(pst.getMinutes()).padStart(2, '0');
-    return `${pst.getFullYear()}-${mon}-${day} ${h}:${m} ${DAYS[pst.getDay()]}`;
-}
+    primaryPane.setFiltersFromURL(new URLSearchParams(window.location.search));
+    history.replaceState({ ...primaryPane.filters }, '', window.location.href);
+    await primaryPane.loadExperiments();
 
-function timeAgo(dateStr) {
-    if (!dateStr) return '';
-    const date = new Date(dateStr + 'Z');
-    const diff = (Date.now() - date.getTime()) / 1000;
-    if (diff < 60) return 'just now';
-    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
-    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
-    return Math.floor(diff / 86400) + 'd ago';
-}
+    document.getElementById('modal-close').addEventListener('click', closeModal);
+    document.getElementById('modal-cancel').addEventListener('click', closeModal);
 
+    document.addEventListener('click', () => {
+        for (const p of panes) {
+            const dd = p.$('.col-picker-dropdown');
+            if (dd) dd.style.display = 'none';
+        }
+    });
 
-function debounce(fn, ms) {
-    let timer;
-    return (...args) => {
-        clearTimeout(timer);
-        timer = setTimeout(() => fn(...args), ms);
-    };
-}
+    window.addEventListener('popstate', (e) => {
+        if (panes[0]) panes[0].restoreState(e.state);
+    });
+});

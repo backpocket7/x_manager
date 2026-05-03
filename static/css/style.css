@@ -40,7 +40,15 @@ body {
 }
 
 .header-top {
-    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 0;
+}
+
+.header-logo {
+    display: flex;
+    align-items: center;
 }
 
 .header h1 {
@@ -48,7 +56,58 @@ body {
     font-weight: 600;
 }
 
-.header-search input {
+/* Pane container */
+
+.pane-container {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+}
+
+.pane {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+    min-height: 0;
+    background: var(--surface);
+}
+
+.tables-area {
+    flex: 1;
+    overflow-y: auto;
+    min-height: 0;
+}
+
+.table-section + .table-section {
+    margin-top: 12px;
+}
+
+.section-header {
+    padding: 4px 48px;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-muted);
+    background: var(--bg);
+}
+
+.table-section .table-wrap {
+    flex: none;
+    overflow-y: visible;
+}
+
+.table-section .empty-state {
+    height: auto;
+}
+
+.pane-search {
+    padding: 6px 48px;
+    background: var(--surface);
+    flex-shrink: 0;
+}
+
+.pane-search input {
     width: 100%;
     max-width: 480px;
     font-size: 12px;
@@ -58,7 +117,7 @@ body {
     background: var(--bg);
 }
 
-.header-search input:focus {
+.pane-search input:focus {
     outline: none;
     border-color: var(--primary);
     box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
@@ -70,8 +129,7 @@ body {
     display: flex;
     flex-direction: column;
     gap: 8px;
-    padding: 6px 0;
-    margin: 0 48px;
+    padding: 6px 48px;
     border-top: 1px solid var(--border);
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
@@ -142,7 +200,7 @@ body {
 
 /* Active filter chips */
 
-#active-filters {
+.active-filters {
     display: flex;
     gap: 6px;
     align-items: center;
@@ -207,16 +265,6 @@ body {
 
 .col-picker-dropdown label:hover {
     background: #f0f4ff;
-}
-
-/* Main list panel */
-
-.list-panel {
-    flex: 1;
-    background: var(--surface);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
 }
 
 /* Table */
