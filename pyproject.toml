@@ -1,0 +1,11 @@
+[project]
+name = "x-manager"
+version = "0.1.0"
+description = "A lightweight web app for managing LLM training and eval workflows"
+requires-python = ">=3.10"
+dependencies = [
+    "flask>=3.0",
+]
+
+[tool.setuptools]
+py-modules = ["app", "db", "seed"]

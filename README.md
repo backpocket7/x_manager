@@ -7,7 +7,7 @@ A lightweight web app for managing LLM training and eval workflows across the fu
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e .
 flask --app app init-db
 flask --app app seed       # seeds the 5 default stages
 python seed.py             # optional: adds sample experiments
