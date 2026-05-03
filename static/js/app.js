@@ -492,6 +492,8 @@ class Pane {
             finishedSection.style.display = 'none';
             mergedSection.style.display = '';
 
+            ongoingSection.querySelector('tbody').innerHTML = '';
+            finishedSection.querySelector('tbody').innerHTML = '';
             this.buildTableHead(mergedSection.querySelector('thead'));
             this.renderRows(experiments, mergedSection.querySelector('tbody'));
             mergedSection.querySelector('.empty-state').style.display = experiments.length === 0 ? 'flex' : 'none';
@@ -500,6 +502,7 @@ class Pane {
             finishedSection.style.display = '';
             mergedSection.style.display = 'none';
 
+            mergedSection.querySelector('tbody').innerHTML = '';
             const ongoing = experiments.filter(e => ONGOING_STATUSES.has(e.status));
             const finished = experiments.filter(e => !ONGOING_STATUSES.has(e.status));
 
