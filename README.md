@@ -16,6 +16,20 @@ flask --app app run --debug --port 5001
 
 Open http://localhost:5001
 
+## Screenshots
+
+### Dashboard
+
+![X Manager dashboard](docs/screenshots/dashboard.png)
+
+### Experiment details
+
+![Expanded experiment details](docs/screenshots/experiment-detail.png)
+
+### Lineage tree
+
+![Experiment lineage tree](docs/screenshots/lineage.png)
+
 ## Features
 
 - Expandable experiment rows with inline parent lineage, eval runs, and notes
